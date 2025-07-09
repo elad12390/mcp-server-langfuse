@@ -216,6 +216,213 @@ server.tool(
   }
 );
 
+// Tool to create or edit (new version) a prompt in Langfuse
+server.tool(
+  "edit-prompt",
+  "Create a new prompt or add a new version to an existing prompt in Langfuse",
+  {
+    name: z
+      .string()
+      .describe("Unique name of the prompt. Use slashes (/) to create folders."),
+    type: z
+      .enum(["text", "chat"])
+      .optional()
+      .describe("Prompt type: 'text' (default) or 'chat'."),
+    prompt: z
+      .string()
+      .describe(
+        "Prompt content. For 'text' prompts provide a string. For 'chat' prompts provide a JSON array string of chat messages each with 'role' and 'content'."
+      ),
+    labels: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Labels to assign to the prompt version, e.g. ['production', 'latest']."
+      ),
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe("Tags to assign to the prompt (shared across versions)."),
+    config: z
+      .string()
+      .optional()
+      .describe("Optional JSON string with custom config object for the prompt."),
+  },
+  async (args) => {
+    try {
+      const { name, type = "text" } = args;
+
+      // Parse prompt content according to type
+      let promptContent: any;
+      if (type === "chat") {
+        try {
+          promptContent = JSON.parse(args.prompt);
+          if (!Array.isArray(promptContent)) {
+            throw new Error("Chat prompt must be a JSON array of messages");
+          }
+        } catch (e) {
+          throw new Error(
+            "Failed to parse 'prompt' as JSON array for chat prompt: " + e
+          );
+        }
+      } else {
+        // text prompt – take raw string
+        promptContent = args.prompt;
+      }
+
+      // Parse optional config
+      let configObj: Record<string, unknown> | undefined = undefined;
+      if (args.config) {
+        try {
+          configObj = JSON.parse(args.config);
+        } catch (e) {
+          throw new Error("Failed to parse 'config' JSON: " + e);
+        }
+      }
+
+      // Call Langfuse SDK to create the prompt (creates new version if name exists)
+      const createBody: any = {
+        name,
+        prompt: promptContent,
+        labels: args.labels,
+        tags: args.tags,
+        config: configObj,
+      };
+
+      if (type === "chat") {
+        createBody.type = "chat";
+      }
+
+      const res = await langfuse.createPrompt(createBody as any);
+
+      const parsedRes: CallToolResult = {
+        content: [
+          {
+            type: "text",
+            text: `Successfully created/updated prompt '${name}' (version ${res.version}).`,
+          },
+        ],
+      };
+
+      return parsedRes;
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: "Error: " + error }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool to publish a prompt version by assigning the 'production' label (and optionally additional labels)
+server.tool(
+  "publish-prompt",
+  "Publish an existing prompt version by assigning labels like 'production' to it",
+  {
+    name: z.string().describe("Name of the prompt to publish"),
+    version: z
+      .number()
+      .optional()
+      .describe(
+        "Version number to publish. If omitted, the latest version will be published."
+      ),
+    labels: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Labels to assign. Defaults to ['production']. Existing labels will be replaced with these."
+      ),
+  },
+  async (args) => {
+    try {
+      const { name } = args;
+      let version = args.version;
+
+      // If version not provided, fetch latest version
+      if (version === undefined) {
+        const latest = await langfuse.getPrompt(name, undefined, {
+          label: "latest",
+          cacheTtlSeconds: 0,
+        });
+        version = latest.version;
+      }
+
+      const newLabels = args.labels ?? ["production"];
+
+      await langfuse.updatePrompt({
+        name,
+        version,
+        newLabels,
+      });
+
+      const parsedRes: CallToolResult = {
+        content: [
+          {
+            type: "text",
+            text: `Prompt '${name}' version ${version} successfully updated with labels: ${newLabels.join(", ")}`,
+          },
+        ],
+      };
+
+      return parsedRes;
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: "Error: " + error }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool to fetch and compile multiple prompts at once
+server.tool(
+  "get-prompts-bulk",
+  "Fetch and compile multiple prompts in one call",
+  {
+    names: z
+      .array(z.string())
+      .min(1)
+      .describe("Array of prompt names to fetch and compile"),
+    arguments: z
+      .record(z.record(z.any()))
+      .optional()
+      .describe(
+        "Optional map from prompt name to arguments object to be passed to each prompt compile"
+      ),
+  },
+  async (args) => {
+    try {
+      const results = await Promise.all(
+        args.names.map(async (promptName) => {
+          const promptArgs = args.arguments?.[promptName] ?? {};
+          const res = await getPromptHandler({
+            method: "prompts/get",
+            params: {
+              name: promptName,
+              arguments: promptArgs,
+            },
+          });
+          return { name: promptName, result: res };
+        })
+      );
+
+      const parsedRes: CallToolResult = {
+        content: results.map((r) => ({
+          type: "text",
+          text: JSON.stringify(r),
+        })),
+      };
+
+      return parsedRes;
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: "Error: " + error }],
+        isError: true,
+      };
+    }
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
