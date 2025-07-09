@@ -1,6 +1,6 @@
 {
   "name": "@solaraai/mcp-server-langfuse",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A MCP Server for Langfuse Prompt Management",
   "main": "index.js",
   "type": "module",
