@@ -10,7 +10,11 @@ import {
   CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Langfuse, ChatPromptClient } from "langfuse";
-import { extractVariables } from "./utils.js";
+import {
+  extractVariables,
+  UNCLOSED_VARIABLE_REGEX,
+  MULTILINE_VARIABLE_REGEX,
+} from "./utils.js";
 import { z } from "zod";
 
 // Requires Environment Variables
@@ -419,6 +423,156 @@ server.tool(
         content: [{ type: "text", text: "Error: " + error }],
         isError: true,
       };
+    }
+  }
+);
+
+// Tool to list versions & metadata of a prompt
+server.tool(
+  "list-prompt-versions",
+  "List all versions, labels, and tags of a prompt",
+  {
+    name: z.string().describe("Name of the prompt"),
+  },
+  async (args) => {
+    try {
+      const res = await langfuse.api.promptsList({ name: args.name, limit: 1 });
+      if (res.data.length === 0) {
+        throw new Error(`Prompt '${args.name}' not found`);
+      }
+      const meta = res.data[0];
+      const parsedRes: CallToolResult = {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(meta),
+          },
+        ],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
+    }
+  }
+);
+
+// Tool to fetch only prompt metadata (single version)
+server.tool(
+  "get-prompt-metadata",
+  "Get metadata of a specific prompt version or label",
+  {
+    name: z.string().describe("Name of the prompt"),
+    version: z.number().optional().describe("Version number to fetch"),
+    label: z.string().optional().describe("Label to fetch (e.g. 'production')"),
+  },
+  async (args) => {
+    try {
+      const res = await langfuse.api.promptsGet({
+        promptName: args.name,
+        version: args.version ?? undefined,
+        label: args.label ?? undefined,
+      });
+      const parsedRes: CallToolResult = {
+        content: [{ type: "text", text: JSON.stringify(res) }],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
+    }
+  }
+);
+
+// Tool to search prompts by name/label/tag substring filters
+server.tool(
+  "search-prompts",
+  "Search prompts by name substring and/or label/tag filters",
+  {
+    query: z.string().optional().describe("Substring to match against prompt names"),
+    label: z.string().optional().describe("Label filter (e.g. 'production')"),
+    tag: z.string().optional().describe("Tag filter"),
+    page: z.number().optional().describe("Page number for pagination (starts at 1)"),
+    limit: z.number().optional().describe("Items per page, default 100"),
+  },
+  async (args) => {
+    try {
+      const { query, label, tag, page, limit } = args;
+      const res = await langfuse.api.promptsList({
+        name: query ?? undefined,
+        label: label ?? undefined,
+        tag: tag ?? undefined,
+        page: page ?? 1,
+        limit: limit ?? 100,
+      });
+      const parsed = res.data.map((p) => ({
+        name: p.name,
+        versions: p.versions,
+        labels: p.labels,
+        tags: p.tags,
+      }));
+
+      const parsedRes: CallToolResult = {
+        content: [{ type: "text", text: JSON.stringify({ data: parsed, meta: res.meta }) }],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
+    }
+  }
+);
+
+// Tool to validate a prompt template before publishing
+server.tool(
+  "validate-prompt",
+  "Validate a prompt template for syntax issues (unclosed variables, malformed chat JSON, etc.)",
+  {
+    type: z.enum(["text", "chat"]).optional().describe("Prompt type"),
+    prompt: z.string().describe("Prompt content to validate"),
+  },
+  async (args) => {
+    try {
+      const issues: string[] = [];
+
+      if (args.type === "chat") {
+        // Chat prompt expected to be JSON array of messages with role/content
+        try {
+          const parsed = JSON.parse(args.prompt);
+          if (!Array.isArray(parsed)) {
+            issues.push("Chat prompt must be a JSON array of messages");
+          } else {
+            parsed.forEach((msg: any, idx: number) => {
+              if (
+                typeof msg !== "object" ||
+                typeof msg.role !== "string" ||
+                typeof msg.content !== "string"
+              ) {
+                issues.push(`Message at index ${idx} is not valid {role, content}`);
+              }
+            });
+          }
+        } catch (e) {
+          issues.push("Prompt JSON parsing failed: " + e);
+        }
+      } else {
+        // Text prompt validation
+        if (MULTILINE_VARIABLE_REGEX.test(args.prompt)) {
+          issues.push("Multiline variables detected; variables must be single-line");
+        }
+        if (UNCLOSED_VARIABLE_REGEX.test(args.prompt)) {
+          issues.push("Unclosed variable placeholder detected");
+        }
+      }
+
+      const resultObj = {
+        isValid: issues.length === 0,
+        issues,
+      };
+
+      const parsedRes: CallToolResult = {
+        content: [{ type: "text", text: JSON.stringify(resultObj) }],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
     }
   }
 );
