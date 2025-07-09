@@ -1,5 +1,5 @@
 {
-  "name": "mcp-server-langfuse",
+  "name": "@solaraai/mcp-server-langfuse",
   "version": "0.0.1",
   "description": "A MCP Server for Langfuse Prompt Management",
   "main": "index.js",
@@ -8,7 +8,9 @@
     "mcp-server-langfuse": "./build/index.js"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\""
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "deploy": "npm run build && npm publish --access public"
   },
   "files": [
     "build"
