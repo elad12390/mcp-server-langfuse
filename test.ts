@@ -1,0 +1,2 @@
+#/usr/bin/env /home/eladbenhaim/dev/stanley/agentflow/.venv/bin/python /home/eladbenhaim/.cursor/extensions/ms-python.debugpy-2025.8.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher 55701 -- -m test_generate_post_real_data  node
+console.log(123);
