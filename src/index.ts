@@ -21,6 +21,12 @@ import { z } from "zod";
 // Requires Environment Variables
 const langfuse = new Langfuse();
 
+// Helper to encode prompt names with slashes for API calls
+// Langfuse API uses prompt name in URL path, so slashes need encoding
+function encodePromptName(name: string): string {
+  return encodeURIComponent(name);
+}
+
 // Create MCP server instance with a "prompts" capability.
 const server = new McpServer(
   {
@@ -203,7 +209,7 @@ server.tool(
   async (args) => {
     try {
       const res = await langfuse.api.promptsGet({
-        promptName: args.name,
+        promptName: encodePromptName(args.name),
         version: args.version,
         label: args.label ?? (args.version ? undefined : "production"),
       });
@@ -547,7 +553,7 @@ server.tool(
     try {
       // First verify the version exists
       const prompt = await langfuse.api.promptsGet({ 
-        promptName: args.name, 
+        promptName: encodePromptName(args.name), 
         version: args.targetVersion 
       });
 
@@ -590,7 +596,7 @@ server.tool(
       let currentPrompt;
       try {
         currentPrompt = await langfuse.api.promptsGet({
-          promptName: args.name,
+          promptName: encodePromptName(args.name),
           label: "production",
         });
       } catch (e) {
@@ -691,8 +697,8 @@ server.tool(
   async (args) => {
     try {
       const [prompt1, prompt2] = await Promise.all([
-        langfuse.api.promptsGet({ promptName: args.name, version: args.version1 }),
-        langfuse.api.promptsGet({ promptName: args.name, version: args.version2 }),
+        langfuse.api.promptsGet({ promptName: encodePromptName(args.name), version: args.version1 }),
+        langfuse.api.promptsGet({ promptName: encodePromptName(args.name), version: args.version2 }),
       ]);
 
       // Get content as strings for comparison
