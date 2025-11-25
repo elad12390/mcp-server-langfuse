@@ -1,56 +1,47 @@
-# `@solaraai/mcp-server-langfuse`
+# `@elad12390/mcp-server-langfuse`
 
-[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that exposes
-your [Langfuse](https://langfuse.com) prompts as standard MCP *prompts* **and**
-CLI *tools*. Now installable in one line:
+A tool that lets AI assistants (like Claude or Cursor) manage your prompt library stored in [Langfuse](https://langfuse.com).
+
+**What are prompts?** Prompts are the instructions you give to AI models. Instead of writing them directly in your code, you can store them in Langfuse and manage them like documents - with versions, drafts, and the ability to update them without changing your code.
 
 ```bash
-npx -y @solaraai/mcp-server-langfuse  # requires LANGFUSE_* env vars
+npx -y @elad12390/mcp-server-langfuse  # requires LANGFUSE_* env vars
 ```
 
 ---
 
-## Features
+## What Can You Do?
 
-### MCP Prompt capability
-
-| Endpoint            | Description                                           |
-| ------------------- | ----------------------------------------------------- |
-| `prompts/list`      | Paginated list of available prompts (production label) |
-| `prompts/get`       | Fetch + compile a single prompt (text or chat)        |
-
-### CLI / Tool equivalents *(for hosts that don’t implement prompt-capability)*
-
-| Tool name              | Purpose                                                       |
-| ---------------------- | ------------------------------------------------------------- |
-| `get-prompts`          | List prompts (same as `prompts/list`)                         |
-| `get-prompt`           | Fetch & compile one prompt                                    |
-| `get-prompts-bulk`     | Fetch & compile **multiple** prompts in one call              |
-| `edit-prompt`          | Create or update (new version) a prompt                       |
-| `publish-prompt`       | Tag a prompt version as `production` or any label             |
-| `list-prompt-versions` | Show all versions/labels/tags for a prompt                    |
-| `get-prompt-metadata`  | Fetch metadata for a version/label (no compilation)           |
-| `search-prompts`       | Search by name / label / tag                                  |
-| `validate-prompt`      | Linter for prompt templates (unclosed vars, chat JSON etc.)   |
+| Tool | What it does |
+| ---- | ------------ |
+| `get-prompts` | List all your saved prompts |
+| `get-prompt` | Get the exact content of a prompt (with all `{{variables}}` intact) |
+| `edit-prompt` | Create or update a prompt. Set `publish=true` to make it live immediately |
+| `publish-prompt` | Mark a draft version as "production" (live) |
+| `list-prompt-versions` | See all versions of a prompt |
+| `search-prompts` | Find prompts by name, label, or tag |
+| `validate-prompt` | Check a prompt for syntax errors before saving |
+| `diff-prompt` | Preview what will change BEFORE you edit (compare new content vs current production) |
+| `compare-versions` | See differences between any two versions |
+| `rollback-prompt` | Go back to an older version if something breaks |
 
 ---
 
-## Quick start
+## Quick Start
 
 ```bash
-# 1. Export your Langfuse keys (or add them to your MCP config)
+# 1. Set your Langfuse credentials
 export LANGFUSE_PUBLIC_KEY="pk-..."
 export LANGFUSE_SECRET_KEY="sk-..."
-export LANGFUSE_BASEURL="https://cloud.langfuse.com"   # optional, defaults
+export LANGFUSE_BASEURL="https://cloud.langfuse.com"   # optional
 
-# 2. Launch via npx
+# 2. Run it
 npx -y @solaraai/mcp-server-langfuse
 ```
 
-The server runs on STDIO, so any MCP host that supports stdio transports (e.g.
-Cursor, Claude Desktop) can spawn it with the same `npx` command.
+### Example: Add to Cursor
 
-### Example host configuration (Cursor)
+Add this to your MCP config:
 
 ```jsonc
 {
@@ -71,39 +62,62 @@ Cursor, Claude Desktop) can spawn it with the same `npx` command.
 
 ---
 
+## Common Workflows
+
+### 1. View a prompt exactly as stored
+```
+get-prompt name="support/greeting"
+```
+Returns the raw content with all `{{variables}}` intact - perfect for reviewing and editing.
+
+### 2. Edit and publish in one step
+```
+edit-prompt name="support/greeting" prompt="..." publish=true
+```
+Creates a new version AND marks it as production immediately.
+
+### 3. Safe editing workflow (recommended)
+```
+# First, see what will change
+diff-prompt name="support/greeting" newPrompt="..."
+
+# If it looks good, save it
+edit-prompt name="support/greeting" prompt="..." publish=true
+```
+
+### 4. Something went wrong? Roll back
+```
+# See what versions exist
+list-prompt-versions name="support/greeting"
+
+# Compare current vs old version
+compare-versions name="support/greeting" version1=3 version2=2
+
+# Roll back to version 2
+rollback-prompt name="support/greeting" targetVersion=2
+```
+
+---
+
 ## Development
 
 ```bash
 git clone https://github.com/solaraai/mcp-server-langfuse
 cd mcp-server-langfuse
 npm install
-npm run build  # emits ./build/index.js
+npm run build
 
 # Run locally
 LANGFUSE_PUBLIC_KEY=... node ./build/index.js
-
-# Or test via MCP inspector
-npx @modelcontextprotocol/inspector npx -y @solaraai/mcp-server-langfuse
-```
-
-### Publishing
-
-Scoped packages default to *private*. We ship it public:
-
-```bash
-npm run deploy   # builds & publishes with --access public
 ```
 
 ---
 
-## Limitations
+## Notes
 
-* Only prompt versions with the `production` label are returned by
-  `prompts/list` for safety (use `search-prompts` or pass `label` param to
-  query others).
-* Variable metadata (required/optional, description) isn’t available from the
-  Langfuse API, so arguments are listed without rich docs.
+- `get-prompt` returns raw content with `{{variables}}` - it does NOT substitute values
+- Every edit creates a new version - you never lose previous work
+- Use `diff-prompt` before editing to review changes
+- Only prompts labeled "production" show up in `get-prompts` (use `search-prompts` to find drafts)
 
-Contributions welcome – open an issue or PR!
-
----
+Questions? Open an issue!

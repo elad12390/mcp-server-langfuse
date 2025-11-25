@@ -140,15 +140,22 @@ async function getPromptHandler(
 server.server.setRequestHandler(ListPromptsRequestSchema, listPromptsHandler);
 server.server.setRequestHandler(GetPromptRequestSchema, getPromptHandler);
 
-// Tools for compatibility
+// ============================================================================
+// PROMPT MANAGEMENT TOOLS
+// These tools help you manage prompts stored in Langfuse - a platform for
+// storing and versioning the instructions you give to AI models.
+// Think of prompts like templates that tell the AI how to behave.
+// ============================================================================
+
+// Tool to list all prompts
 server.tool(
   "get-prompts",
-  "Get prompts that are stored in Langfuse",
+  "Shows all your saved prompts. Returns a list of prompt names, their versions, labels, and tags. Use this to see what prompts exist in your Langfuse project.",
   {
     cursor: z
       .string()
       .optional()
-      .describe("Cursor to paginate through prompts"),
+      .describe("Page number if you have many prompts and need to see more"),
   },
   async (args) => {
     try {
@@ -176,37 +183,47 @@ server.tool(
   }
 );
 
+// Tool to get a single prompt - returns RAW content without variable substitution
 server.tool(
   "get-prompt",
-  "Get a prompt that is stored in Langfuse",
+  "Gets the exact content of a prompt as stored in Langfuse - including all {{variables}} unchanged. Returns the raw prompt text, type, version, labels, and config. Use this to review or copy prompt content.",
   {
     name: z
       .string()
-      .describe(
-        "Name of the prompt to retrieve, use get-prompts to get a list of prompts"
-      ),
-    arguments: z
-      .record(z.string())
+      .describe("The name of the prompt you want to retrieve"),
+    version: z
+      .number()
       .optional()
-      .describe(
-        'Arguments with prompt variables to pass to the prompt template, json object, e.g. {"<name>":"<value>"}'
-      ),
+      .describe("Specific version number to get. Leave empty for the production version."),
+    label: z
+      .string()
+      .optional()
+      .describe("Get prompt by label like 'production', 'staging', or 'latest'"),
   },
-  async (args, extra) => {
+  async (args) => {
     try {
-      const res = await getPromptHandler({
-        method: "prompts/get",
-        params: {
-          name: args.name,
-          arguments: args.arguments,
-        },
+      const res = await langfuse.api.promptsGet({
+        promptName: args.name,
+        version: args.version,
+        label: args.label ?? (args.version ? undefined : "production"),
       });
+
+      // Return the raw prompt data exactly as stored
+      const result = {
+        name: res.name,
+        version: res.version,
+        type: res.type,
+        prompt: res.prompt,  // Raw content with {{variables}} intact
+        labels: res.labels,
+        tags: res.tags,
+        config: res.config,
+      };
 
       const parsedRes: CallToolResult = {
         content: [
           {
             type: "text",
-            text: JSON.stringify(res),
+            text: JSON.stringify(result, null, 2),
           },
         ],
       };
@@ -221,41 +238,45 @@ server.tool(
   }
 );
 
-// Tool to create or edit (new version) a prompt in Langfuse
+// Tool to create or edit a prompt - with optional publish in same call
 server.tool(
   "edit-prompt",
-  "Create a new prompt or add a new version to an existing prompt in Langfuse",
+  "Creates a new prompt or saves a new version of an existing one. Every edit creates a new version (you never lose previous work). You can also publish it to production in the same step by setting publish=true.",
   {
     name: z
       .string()
-      .describe("Unique name of the prompt. Use slashes (/) to create folders."),
+      .describe("Name for your prompt. Use slashes to organize into folders like 'customer-service/greeting'"),
     type: z
       .enum(["text", "chat"])
       .optional()
-      .describe("Prompt type: 'text' (default) or 'chat'."),
+      .describe("'text' for simple prompts, 'chat' for conversation-style prompts with multiple messages"),
     prompt: z
       .string()
       .describe(
-        "Prompt content. For 'text' prompts provide a string. For 'chat' prompts provide a JSON array string of chat messages each with 'role' and 'content'."
+        "The prompt content. Use {{variable_name}} for placeholders. For chat type, provide a JSON array of messages with 'role' and 'content'."
       ),
+    publish: z
+      .boolean()
+      .optional()
+      .describe("Set to true to immediately mark this version as 'production' (live). Default is false (saves as draft)."),
     labels: z
       .array(z.string())
       .optional()
       .describe(
-        "Labels to assign to the prompt version, e.g. ['production', 'latest']."
+        "Additional labels to apply. If publish=true, 'production' is automatically added."
       ),
     tags: z
       .array(z.string())
       .optional()
-      .describe("Tags to assign to the prompt (shared across versions)."),
+      .describe("Categories to help find this prompt later, like 'sales' or 'support'"),
     config: z
       .string()
       .optional()
-      .describe("Optional JSON string with custom config object for the prompt."),
+      .describe("Extra settings as JSON string (advanced)"),
   },
   async (args) => {
     try {
-      const { name, type = "text" } = args;
+      const { name, type = "text", publish = false } = args;
 
       // Parse prompt content according to type
       let promptContent: any;
@@ -285,11 +306,17 @@ server.tool(
         }
       }
 
+      // Build labels - add 'production' if publishing
+      let labels = args.labels ?? [];
+      if (publish && !labels.includes("production")) {
+        labels = ["production", ...labels];
+      }
+
       // Call Langfuse SDK to create the prompt (creates new version if name exists)
       const createBody: any = {
         name,
         prompt: promptContent,
-        labels: args.labels,
+        labels: labels.length > 0 ? labels : undefined,
         tags: args.tags,
         config: configObj,
       };
@@ -300,11 +327,15 @@ server.tool(
 
       const res = await langfuse.createPrompt(createBody as any);
 
+      const statusMsg = publish 
+        ? `Created and published prompt '${name}' version ${res.version} to production.`
+        : `Created prompt '${name}' version ${res.version} as draft. Use publish-prompt to make it live.`;
+
       const parsedRes: CallToolResult = {
         content: [
           {
             type: "text",
-            text: `Successfully created/updated prompt '${name}' (version ${res.version}).`,
+            text: statusMsg,
           },
         ],
       };
@@ -319,23 +350,23 @@ server.tool(
   }
 );
 
-// Tool to publish a prompt version by assigning the 'production' label (and optionally additional labels)
+// Tool to publish a prompt version
 server.tool(
   "publish-prompt",
-  "Publish an existing prompt version by assigning labels like 'production' to it",
+  "Makes a prompt version 'live' by marking it as 'production'. Use this when you've reviewed a draft and it's ready for your app to use.",
   {
     name: z.string().describe("Name of the prompt to publish"),
     version: z
       .number()
       .optional()
       .describe(
-        "Version number to publish. If omitted, the latest version will be published."
+        "Which version number to publish. Leave empty to publish the newest version."
       ),
     labels: z
       .array(z.string())
       .optional()
       .describe(
-        "Labels to assign. Defaults to ['production']. Existing labels will be replaced with these."
+        "Labels to apply. Default is ['production']. Examples: ['production'], ['production', 'reviewed']"
       ),
   },
   async (args) => {
@@ -364,7 +395,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Prompt '${name}' version ${version} successfully updated with labels: ${newLabels.join(", ")}`,
+            text: `Prompt '${name}' version ${version} is now live with labels: ${newLabels.join(", ")}`,
           },
         ],
       };
@@ -379,61 +410,12 @@ server.tool(
   }
 );
 
-// Tool to fetch and compile multiple prompts at once
-server.tool(
-  "get-prompts-bulk",
-  "Fetch and compile multiple prompts in one call",
-  {
-    names: z
-      .array(z.string())
-      .min(1)
-      .describe("Array of prompt names to fetch and compile"),
-    arguments: z
-      .record(z.record(z.any()))
-      .optional()
-      .describe(
-        "Optional map from prompt name to arguments object to be passed to each prompt compile"
-      ),
-  },
-  async (args) => {
-    try {
-      const results = await Promise.all(
-        args.names.map(async (promptName) => {
-          const promptArgs = args.arguments?.[promptName] ?? {};
-          const res = await getPromptHandler({
-            method: "prompts/get",
-            params: {
-              name: promptName,
-              arguments: promptArgs,
-            },
-          });
-          return { name: promptName, result: res };
-        })
-      );
-
-      const parsedRes: CallToolResult = {
-        content: results.map((r) => ({
-          type: "text",
-          text: JSON.stringify(r),
-        })),
-      };
-
-      return parsedRes;
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: "Error: " + error }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// Tool to list versions & metadata of a prompt
+// Tool to list versions of a prompt
 server.tool(
   "list-prompt-versions",
-  "List all versions, labels, and tags of a prompt",
+  "Shows the history of a prompt - all versions, their labels, and tags. Use this to see what versions exist before comparing or rolling back.",
   {
-    name: z.string().describe("Name of the prompt"),
+    name: z.string().describe("Name of the prompt to see history for"),
   },
   async (args) => {
     try {
@@ -446,7 +428,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(meta),
+            text: JSON.stringify(meta, null, 2),
           },
         ],
       };
@@ -457,42 +439,16 @@ server.tool(
   }
 );
 
-// Tool to fetch only prompt metadata (single version)
-server.tool(
-  "get-prompt-metadata",
-  "Get metadata of a specific prompt version or label",
-  {
-    name: z.string().describe("Name of the prompt"),
-    version: z.number().optional().describe("Version number to fetch"),
-    label: z.string().optional().describe("Label to fetch (e.g. 'production')"),
-  },
-  async (args) => {
-    try {
-      const res = await langfuse.api.promptsGet({
-        promptName: args.name,
-        version: args.version ?? undefined,
-        label: args.label ?? undefined,
-      });
-      const parsedRes: CallToolResult = {
-        content: [{ type: "text", text: JSON.stringify(res) }],
-      };
-      return parsedRes;
-    } catch (error) {
-      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
-    }
-  }
-);
-
-// Tool to search prompts by name/label/tag substring filters
+// Tool to search prompts
 server.tool(
   "search-prompts",
-  "Search prompts by name substring and/or label/tag filters",
+  "Find prompts by name, label, or tag. Like a search engine for your prompts. Helpful when you have many prompts and need to find specific ones.",
   {
-    query: z.string().optional().describe("Substring to match against prompt names"),
-    label: z.string().optional().describe("Label filter (e.g. 'production')"),
-    tag: z.string().optional().describe("Tag filter"),
-    page: z.number().optional().describe("Page number for pagination (starts at 1)"),
-    limit: z.number().optional().describe("Items per page, default 100"),
+    query: z.string().optional().describe("Search text to find in prompt names"),
+    label: z.string().optional().describe("Find prompts with this label, like 'production' or 'draft'"),
+    tag: z.string().optional().describe("Find prompts with this tag, like 'sales' or 'support'"),
+    page: z.number().optional().describe("Page number for results (starts at 1)"),
+    limit: z.number().optional().describe("How many results to show (default 100)"),
   },
   async (args) => {
     try {
@@ -512,7 +468,7 @@ server.tool(
       }));
 
       const parsedRes: CallToolResult = {
-        content: [{ type: "text", text: JSON.stringify({ data: parsed, meta: res.meta }) }],
+        content: [{ type: "text", text: JSON.stringify({ data: parsed, meta: res.meta }, null, 2) }],
       };
       return parsedRes;
     } catch (error) {
@@ -521,13 +477,13 @@ server.tool(
   }
 );
 
-// Tool to validate a prompt template before publishing
+// Tool to validate a prompt template
 server.tool(
   "validate-prompt",
-  "Validate a prompt template for syntax issues (unclosed variables, malformed chat JSON, etc.)",
+  "Checks your prompt for common mistakes before you save it. Catches things like unclosed {{variables}} or badly formatted chat messages.",
   {
-    type: z.enum(["text", "chat"]).optional().describe("Prompt type"),
-    prompt: z.string().describe("Prompt content to validate"),
+    type: z.enum(["text", "chat"]).optional().describe("'text' for simple prompts, 'chat' for conversation-style"),
+    prompt: z.string().describe("The prompt content you want to check for errors"),
   },
   async (args) => {
     try {
@@ -538,7 +494,7 @@ server.tool(
         try {
           const parsed = JSON.parse(args.prompt);
           if (!Array.isArray(parsed)) {
-            issues.push("Chat prompt must be a JSON array of messages");
+            issues.push("Chat prompt must be a list of messages");
           } else {
             parsed.forEach((msg: any, idx: number) => {
               if (
@@ -546,30 +502,254 @@ server.tool(
                 typeof msg.role !== "string" ||
                 typeof msg.content !== "string"
               ) {
-                issues.push(`Message at index ${idx} is not valid {role, content}`);
+                issues.push(`Message #${idx + 1} is missing 'role' or 'content'`);
               }
             });
           }
         } catch (e) {
-          issues.push("Prompt JSON parsing failed: " + e);
+          issues.push("Could not read the prompt - check the formatting");
         }
       } else {
         // Text prompt validation
         if (MULTILINE_VARIABLE_REGEX.test(args.prompt)) {
-          issues.push("Multiline variables detected; variables must be single-line");
+          issues.push("Variables like {{name}} should be on one line, not split across lines");
         }
         if (UNCLOSED_VARIABLE_REGEX.test(args.prompt)) {
-          issues.push("Unclosed variable placeholder detected");
+          issues.push("Found an opening {{ without a closing }} - check your variables");
         }
       }
 
       const resultObj = {
         isValid: issues.length === 0,
         issues,
+        message: issues.length === 0 ? "Looks good! No problems found." : "Found some issues to fix.",
       };
 
       const parsedRes: CallToolResult = {
-        content: [{ type: "text", text: JSON.stringify(resultObj) }],
+        content: [{ type: "text", text: JSON.stringify(resultObj, null, 2) }],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
+    }
+  }
+);
+
+// Tool to rollback prompt to a previous version
+server.tool(
+  "rollback-prompt",
+  "Undo changes by making an older version the new 'production' version. Use this if the latest version has problems and you need to quickly go back to what was working.",
+  {
+    name: z.string().describe("Name of the prompt to roll back"),
+    targetVersion: z.number().describe("Which version number to go back to"),
+  },
+  async (args) => {
+    try {
+      // First verify the version exists
+      const prompt = await langfuse.api.promptsGet({ 
+        promptName: args.name, 
+        version: args.targetVersion 
+      });
+
+      if (!prompt) {
+        throw new Error(`Version ${args.targetVersion} of prompt '${args.name}' not found`);
+      }
+
+      // Update the target version to have 'production' label
+      await langfuse.updatePrompt({
+        name: args.name,
+        version: args.targetVersion,
+        newLabels: ["production"],
+      });
+
+      const parsedRes: CallToolResult = {
+        content: [{ 
+          type: "text", 
+          text: `Done! Rolled back '${args.name}' to version ${args.targetVersion}. This version is now live.`
+        }],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
+    }
+  }
+);
+
+// Tool to show diff between current production and a new prompt before editing
+server.tool(
+  "diff-prompt",
+  "Shows a diff between the current production prompt and new content you want to save. Use this BEFORE editing to review what will change. Helps catch mistakes before publishing.",
+  {
+    name: z.string().describe("Name of the prompt to compare against"),
+    newPrompt: z.string().describe("The new prompt content you're planning to save"),
+    newType: z.enum(["text", "chat"]).optional().describe("Type of the new prompt (defaults to current type)"),
+  },
+  async (args) => {
+    try {
+      // Get current production version
+      let currentPrompt;
+      try {
+        currentPrompt = await langfuse.api.promptsGet({
+          promptName: args.name,
+          label: "production",
+        });
+      } catch (e) {
+        // Prompt doesn't exist yet - this is a new prompt
+        const parsedRes: CallToolResult = {
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({
+              status: "new_prompt",
+              message: `Prompt '${args.name}' doesn't exist yet. This will create a brand new prompt.`,
+              newContent: args.newPrompt,
+            }, null, 2)
+          }],
+        };
+        return parsedRes;
+      }
+
+      // Parse new prompt if it's chat type
+      let newPromptContent: any = args.newPrompt;
+      const newType = args.newType ?? currentPrompt.type;
+      if (newType === "chat") {
+        try {
+          newPromptContent = JSON.parse(args.newPrompt);
+        } catch (e) {
+          // Keep as string if parse fails - validation will catch it
+        }
+      }
+
+      // Get current content as string for comparison
+      const currentContent = typeof currentPrompt.prompt === "string" 
+        ? currentPrompt.prompt 
+        : JSON.stringify(currentPrompt.prompt, null, 2);
+      
+      const newContent = typeof newPromptContent === "string"
+        ? newPromptContent
+        : JSON.stringify(newPromptContent, null, 2);
+
+      // Simple line-by-line diff
+      const currentLines = currentContent.split('\n');
+      const newLines = newContent.split('\n');
+      
+      const diff: string[] = [];
+      const maxLines = Math.max(currentLines.length, newLines.length);
+      
+      for (let i = 0; i < maxLines; i++) {
+        const currentLine = currentLines[i] ?? '';
+        const newLine = newLines[i] ?? '';
+        
+        if (currentLine !== newLine) {
+          if (currentLine && !newLine) {
+            diff.push(`- ${currentLine}`);
+          } else if (!currentLine && newLine) {
+            diff.push(`+ ${newLine}`);
+          } else {
+            diff.push(`- ${currentLine}`);
+            diff.push(`+ ${newLine}`);
+          }
+        }
+      }
+
+      const hasChanges = diff.length > 0;
+      const typeChanged = newType !== currentPrompt.type;
+
+      const result = {
+        name: args.name,
+        currentVersion: currentPrompt.version,
+        hasChanges,
+        typeChanged,
+        currentType: currentPrompt.type,
+        newType,
+        summary: hasChanges 
+          ? `${diff.filter(l => l.startsWith('-')).length} lines removed, ${diff.filter(l => l.startsWith('+')).length} lines added`
+          : "No changes detected",
+        diff: hasChanges ? diff.join('\n') : null,
+        currentContent,
+        newContent,
+      };
+
+      const parsedRes: CallToolResult = {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+      return parsedRes;
+    } catch (error) {
+      return { content: [{ type: "text", text: "Error: " + error }], isError: true };
+    }
+  }
+);
+
+// Tool to compare two prompt versions
+server.tool(
+  "compare-versions",
+  "Shows the exact content of two versions side-by-side with a diff. Use this to review what changed between versions, or before rolling back.",
+  {
+    name: z.string().describe("Name of the prompt"),
+    version1: z.number().describe("First version number"),
+    version2: z.number().describe("Second version number"),
+  },
+  async (args) => {
+    try {
+      const [prompt1, prompt2] = await Promise.all([
+        langfuse.api.promptsGet({ promptName: args.name, version: args.version1 }),
+        langfuse.api.promptsGet({ promptName: args.name, version: args.version2 }),
+      ]);
+
+      // Get content as strings for comparison
+      const content1 = typeof prompt1.prompt === "string" 
+        ? prompt1.prompt 
+        : JSON.stringify(prompt1.prompt, null, 2);
+      
+      const content2 = typeof prompt2.prompt === "string"
+        ? prompt2.prompt
+        : JSON.stringify(prompt2.prompt, null, 2);
+
+      // Simple line-by-line diff
+      const lines1 = content1.split('\n');
+      const lines2 = content2.split('\n');
+      
+      const diff: string[] = [];
+      const maxLines = Math.max(lines1.length, lines2.length);
+      
+      for (let i = 0; i < maxLines; i++) {
+        const line1 = lines1[i] ?? '';
+        const line2 = lines2[i] ?? '';
+        
+        if (line1 !== line2) {
+          if (line1 && !line2) {
+            diff.push(`v${args.version1}: - ${line1}`);
+          } else if (!line1 && line2) {
+            diff.push(`v${args.version2}: + ${line2}`);
+          } else {
+            diff.push(`v${args.version1}: - ${line1}`);
+            diff.push(`v${args.version2}: + ${line2}`);
+          }
+        }
+      }
+
+      const hasChanges = diff.length > 0 || prompt1.type !== prompt2.type;
+
+      const comparison = {
+        name: args.name,
+        hasChanges,
+        typeChanged: prompt1.type !== prompt2.type,
+        version1: {
+          version: args.version1,
+          type: prompt1.type,
+          labels: prompt1.labels,
+          prompt: prompt1.prompt,
+        },
+        version2: {
+          version: args.version2,
+          type: prompt2.type,
+          labels: prompt2.labels,
+          prompt: prompt2.prompt,
+        },
+        diff: hasChanges ? diff.join('\n') : "No differences",
+      };
+
+      const parsedRes: CallToolResult = {
+        content: [{ type: "text", text: JSON.stringify(comparison, null, 2) }],
       };
       return parsedRes;
     } catch (error) {
