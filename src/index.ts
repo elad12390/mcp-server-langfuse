@@ -770,6 +770,134 @@ server.tool(
   }
 );
 
+// Tool to upload/update a prompt from a file
+server.tool(
+  "upload-prompt",
+  "Creates or updates a prompt using content from a local file. Perfect for syncing prompts from version control or restoring from backups. Supports both raw prompt files and metadata JSON files (from download-prompt with includeMetadata).",
+  {
+    name: z
+      .string()
+      .describe("Name for the prompt in Langfuse. Use slashes to organize into folders like 'customer-service/greeting'"),
+    filePath: z
+      .string()
+      .describe("Full file path to read the prompt content from"),
+    type: z
+      .enum(["text", "chat", "auto"])
+      .optional()
+      .describe("'text' for simple prompts, 'chat' for conversation-style prompts, 'auto' to detect from file content (default)"),
+    publish: z
+      .boolean()
+      .optional()
+      .describe("Set to true to immediately mark this version as 'production' (live). Default is false (saves as draft)."),
+    labels: z
+      .array(z.string())
+      .optional()
+      .describe("Additional labels to apply. If publish=true, 'production' is automatically added."),
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe("Categories to help find this prompt later, like 'sales' or 'support'"),
+  },
+  async (args) => {
+    try {
+      const fs = await import("fs/promises");
+      
+      // Read file content
+      const fileContent = await fs.readFile(args.filePath, "utf-8");
+      
+      let promptContent: any;
+      let promptType: "text" | "chat" = "text";
+      let detectedLabels = args.labels ?? [];
+      let detectedTags = args.tags;
+      let configObj: Record<string, unknown> | undefined;
+      
+      // Try to parse as JSON (could be metadata file or chat prompt)
+      try {
+        const parsed = JSON.parse(fileContent);
+        
+        // Check if it's a metadata file (from download-prompt with includeMetadata)
+        if (parsed.prompt !== undefined && parsed.type !== undefined) {
+          // It's a metadata file
+          promptContent = parsed.prompt;
+          promptType = parsed.type === "chat" ? "chat" : "text";
+          
+          // Use metadata labels/tags if not explicitly provided
+          if (!args.labels && parsed.labels) {
+            detectedLabels = parsed.labels;
+          }
+          if (!args.tags && parsed.tags) {
+            detectedTags = parsed.tags;
+          }
+          if (parsed.config) {
+            configObj = parsed.config;
+          }
+        } else if (Array.isArray(parsed)) {
+          // It's a chat prompt (array of messages)
+          promptContent = parsed;
+          promptType = "chat";
+        } else {
+          // It's some other JSON - treat as text
+          promptContent = fileContent;
+          promptType = "text";
+        }
+      } catch {
+        // Not valid JSON - treat as text prompt
+        promptContent = fileContent;
+        promptType = "text";
+      }
+      
+      // Override type if explicitly specified
+      if (args.type && args.type !== "auto") {
+        promptType = args.type;
+        // If forcing text type on parsed JSON array, stringify it back
+        if (promptType === "text" && Array.isArray(promptContent)) {
+          promptContent = JSON.stringify(promptContent, null, 2);
+        }
+      }
+      
+      // Build labels - add 'production' if publishing
+      if (args.publish && !detectedLabels.includes("production")) {
+        detectedLabels = ["production", ...detectedLabels];
+      }
+      
+      // Create the prompt
+      const createBody: any = {
+        name: args.name,
+        prompt: promptContent,
+        labels: detectedLabels.length > 0 ? detectedLabels : undefined,
+        tags: detectedTags,
+        config: configObj,
+      };
+      
+      if (promptType === "chat") {
+        createBody.type = "chat";
+      }
+      
+      const res = await langfuse.createPrompt(createBody as any);
+      
+      const statusMsg = args.publish
+        ? `Uploaded and published prompt '${args.name}' version ${res.version} to production from ${args.filePath}`
+        : `Uploaded prompt '${args.name}' version ${res.version} as draft from ${args.filePath}. Use publish-prompt to make it live.`;
+      
+      const parsedRes: CallToolResult = {
+        content: [
+          {
+            type: "text",
+            text: statusMsg,
+          },
+        ],
+      };
+      
+      return parsedRes;
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: "Error: " + error }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // Tool to compare two prompt versions
 server.tool(
   "compare-versions",
