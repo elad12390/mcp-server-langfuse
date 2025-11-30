@@ -685,6 +685,91 @@ server.tool(
   }
 );
 
+// Tool to download a prompt to a file
+server.tool(
+  "download-prompt",
+  "Downloads a prompt's raw content to a local file. Saves the prompt exactly as stored in Langfuse - perfect for backup, local editing, or version control.",
+  {
+    name: z
+      .string()
+      .describe("The name of the prompt to download"),
+    filePath: z
+      .string()
+      .describe("Full file path where the prompt should be saved (e.g., '/path/to/prompt.txt' or '/path/to/prompt.json')"),
+    version: z
+      .number()
+      .optional()
+      .describe("Specific version number to download. Leave empty for the production version."),
+    label: z
+      .string()
+      .optional()
+      .describe("Download prompt by label like 'production', 'staging', or 'latest'"),
+    includeMetadata: z
+      .boolean()
+      .optional()
+      .describe("If true, includes metadata (version, labels, tags, config) in the output. Default is false (just the prompt content)."),
+  },
+  async (args) => {
+    try {
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      
+      const res = await langfuse.api.promptsGet({
+        promptName: encodePromptName(args.name),
+        version: args.version,
+        label: args.label ?? (args.version ? undefined : "production"),
+      });
+
+      let fileContent: string;
+      
+      if (args.includeMetadata) {
+        // Include full metadata
+        const fullData = {
+          name: res.name,
+          version: res.version,
+          type: res.type,
+          prompt: res.prompt,
+          labels: res.labels,
+          tags: res.tags,
+          config: res.config,
+        };
+        fileContent = JSON.stringify(fullData, null, 2);
+      } else {
+        // Just the raw prompt content
+        if (typeof res.prompt === "string") {
+          fileContent = res.prompt;
+        } else {
+          // Chat prompt - array of messages
+          fileContent = JSON.stringify(res.prompt, null, 2);
+        }
+      }
+
+      // Ensure directory exists
+      const dir = path.dirname(args.filePath);
+      await fs.mkdir(dir, { recursive: true });
+      
+      // Write the file
+      await fs.writeFile(args.filePath, fileContent, "utf-8");
+
+      const parsedRes: CallToolResult = {
+        content: [
+          {
+            type: "text",
+            text: `Downloaded prompt '${res.name}' (v${res.version}) to ${args.filePath}`,
+          },
+        ],
+      };
+
+      return parsedRes;
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: "Error: " + error }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // Tool to compare two prompt versions
 server.tool(
   "compare-versions",
