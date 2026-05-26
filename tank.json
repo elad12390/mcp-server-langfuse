@@ -1,0 +1,45 @@
+{
+  "name": "@elad12390/mcp-server-langfuse",
+  "version": "0.2.1",
+  "description": "MCP server for Langfuse prompt management. List, get, edit, publish, diff, compare versions, rollback, validate, and search prompts. Triggers: langfuse, prompt management, prompt versions, prompt diff, llm prompts.",
+  "permissions": {
+    "network": {
+      "outbound": [
+        "*"
+      ]
+    },
+    "filesystem": {
+      "read": [
+        "**/*"
+      ],
+      "write": []
+    },
+    "subprocess": false
+  },
+  "repository": "https://github.com/elad12390/mcp-server-langfuse",
+  "publish": {
+    "files": [
+      "build/**",
+      "package.json",
+      "package-lock.json",
+      "SKILL.md",
+      "tank.json",
+      "README.md",
+      "LICENSE"
+    ]
+  },
+  "atoms": [
+    {
+      "kind": "tool",
+      "name": "mcp-server-langfuse",
+      "mcp": {
+        "runtime": "node",
+        "entry": "build/index.js"
+      }
+    },
+    {
+      "kind": "instruction",
+      "content": "./SKILL.md"
+    }
+  ]
+}
