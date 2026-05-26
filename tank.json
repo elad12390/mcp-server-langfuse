@@ -5,7 +5,7 @@
   "permissions": {
     "network": {
       "outbound": [
-        "*"
+        "*.langfuse.com"
       ]
     },
     "filesystem": {
